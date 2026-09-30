@@ -597,10 +597,21 @@ public static partial class PrivateApi
         await Upstream.Pipe(ApiClient.ApiRequest($"ai-assist-price?us={username}", HttpMethod.Get), ctx);
     }
 
+    /// <summary>Signed-code validation for AI assist, replaceable for tests (no chain RPC).</summary>
+    internal static Func<JsonObject, Task<string?>> AiAssistValidateCode = ValidateCode;
+
+    /// <summary>
+    /// The AI assist upstream call, replaceable so tests can observe the body.
+    /// The default keeps the long timeout: generation can take well past the usual
+    /// upstream budget.
+    /// </summary>
+    internal static Func<string, HttpMethod, JsonNode?, Task<UpstreamResponse>> AiAssistUpstream =
+        (endpoint, method, payload) => ApiClient.ApiRequest(endpoint, method, null, payload, null, 120000);
+
     public static async Task AiAssist(HttpContext ctx)
     {
         var body = await ctx.ReadBody();
-        var username = await ValidateCode(body);
+        var username = await AiAssistValidateCode(body);
         if (username == null)
         {
             await ctx.SendText(401, "Unauthorized");
@@ -610,9 +621,11 @@ public static partial class PrivateApi
         {
             ["us"] = username,
         };
-        MiscCopyIfPresent(data, body, "action", "text");
-        // AI assist generation can take a long time; keep it long.
-        await Upstream.Pipe(ApiClient.ApiRequest("ai-assist", HttpMethod.Post, null, data, null, 120000), ctx);
+        // idempotency_key lets a retry recover the same paid assist instead of
+        // charging a second one. Older clients omit it, so it is copied only when
+        // present; the upstream validates its format itself.
+        MiscCopyIfPresent(data, body, "action", "text", "idempotency_key");
+        await Upstream.Pipe(AiAssistUpstream("ai-assist", HttpMethod.Post, data), ctx);
     }
 
     public static async Task AiTranscribePrice(HttpContext ctx)
